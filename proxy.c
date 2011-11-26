@@ -15,7 +15,7 @@ typedef struct {
     char method[MAXLINE];
     char version[MAXLINE];
     char uri[MAXLINE];
-    char buffer[MAXLINE];
+    char buffer[MAXBUF];
     char request_file[MAXLINE];
 } Request_info;
 
@@ -45,20 +45,29 @@ void client_error(int fd, char *cause, char *errnum,
  * request_handler - build up request to dest server in a new thread
  */
 void *request_handler(void *ptr) {
+    size_t n;
     int server_fd;
     rio_t server_rio;
 
+    char buffer[MAXBUF];
     Request_info *request_info = (Request_info*)ptr;
-    
+
+    printf("try to connect to %s:%d\n", 
+            request_info->hostname, request_info->port);
     server_fd = open_clientfd(request_info->hostname, request_info->port);
-    printf("connect to %s:%d\n", request_info->hostname, request_info->port);
+    
     rio_readinitb(&server_rio, server_fd);
+    printf("try to send to server\n");
     rio_writen(server_fd, request_info->buffer, strlen(request_info->buffer));
-    printf("send to server %s \n", request_info->buffer);
-    while ((rio_readlineb(&server_rio, request_info->buffer, MAXLINE)) != 0) { 
-        rio_writen(request_info->client_fd, request_info->buffer, 
-                strlen(request_info->buffer));
+        
+    while ((n = rio_readnb(&server_rio, buffer, MAXBUF)) != 0) { 
+        rio_writen(request_info->client_fd, buffer, n);
     }
+    
+    /*
+    while ((n = rio_readlineb(&server_rio, buffer, MAXBUF)) != 0) { 
+        rio_writen(request_info->client_fd, buffer, strlen(buffer));
+    }*/
     Close(server_fd);
     free(ptr);
     return NULL;
@@ -70,8 +79,10 @@ void *request_handler(void *ptr) {
 void scheduler(Request_info *request_info) {
     pthread_t tid;
 
+    printf("create new thread\n");
     Pthread_create(&tid, NULL, request_handler, request_info);
     Pthread_join(tid, NULL);
+    printf("harvest thread\n");
 }
 
 /*
@@ -125,7 +136,8 @@ void uri_parser(char *str, Request_info *request_info) {
         }
     }
 
-    sprintf(buffer, "GET %s %s \n\r\n", file, request_info->version);
+    //sprintf(buffer, "GET %s %s\r\nHost: www.google.com\r\n\n\r\n", file, request_info->version);
+    sprintf(buffer, "GET %s HTTP/1.0\r\n\n\r\n", file);
     strcpy(request_info->buffer, buffer);
 }
 
@@ -142,11 +154,7 @@ Request_info * init_request_info(int client_fd, char *buffer) {
     sscanf(buffer, "%s %s %s", request_info->method, 
             request_info->uri, request_info->version);
     uri_parser(request_info->uri, request_info);
-    if (strcasecmp(request_info->method, "GET")) { 
-       client_error(client_fd, request_info->method, "501", "Not Implemented",
-                " Not implement this method");
-        return NULL;
-    }
+    
     return request_info;
 }
 
@@ -156,14 +164,23 @@ Request_info * init_request_info(int client_fd, char *buffer) {
 void parse_request(int client_fd) {
     size_t n;
     char buffer[MAXLINE];
+    char method[MAXLINE];
     rio_t client_rio;
     Request_info *request_info = NULL;
     
     rio_readinitb(&client_rio, client_fd);
-    while ((n = rio_readlineb(&client_rio, buffer, MAXLINE)) != 0) { 
-        printf("server received from client %lu bytes, %s", n, buffer);
-        if ((request_info = init_request_info(client_fd, buffer)) != NULL)
-            scheduler(request_info);
+    while ((n = rio_readlineb(&client_rio, buffer, MAXLINE)) != 0 &&
+            strcmp(buffer, "\r\n")) { 
+
+        printf("server received from client %u bytes, %s", n, buffer);
+        sscanf(buffer, "%s", method);
+        
+        /* only process GET method from client right now*/
+        if (!strcasecmp(method, "GET")) {
+            printf("process request %s", buffer);
+            if ((request_info = init_request_info(client_fd, buffer)) != NULL)
+                scheduler(request_info);
+        }
     }
 }
 
@@ -193,6 +210,7 @@ int main (int argc, char *argv []) {
                 host_info->h_name, ip_str);
 
         parse_request(connfd);
+        printf("request complete, connectin close\n\n\n"); 
         Close(connfd); 
     }
     exit(0);
