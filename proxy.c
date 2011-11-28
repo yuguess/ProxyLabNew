@@ -1,217 +1,193 @@
 /*
- * Name:   Dalong Cheng, Fan Xiang
- * Andrew: dalongc, fanx
+ * Name     : Dalong Cheng, Fan Xiang
+ * Andrew ID: dalongc, fanx
  */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "csapp.h"
 
 typedef struct {
-    int client_fd; 
-    int port;
-    char hostname[MAXLINE];
-    char method[MAXLINE];
-    char version[MAXLINE];
-    char uri[MAXLINE];
-    char buffer[MAXBUF];
-    char request_file[MAXLINE];
-} Request_info;
+    char request_str[MAXLINE]; 
+    char host_str[MAXLINE];
+} Request;
+/*
+typedef struct {
+    char 
+} Response_Header;
+*/
 
-void client_error(int fd, char *cause, char *errnum, 
-		 char *shortmsg, char *longmsg) 
-{
-    char buf[MAXLINE], body[MAXBUF];
+typedef struct {
+    char header[MAXLINE];
+} Response;
 
-    /* Build the HTTP response body */
-    sprintf(body, "<html><title>Proxy Error</title>");
-    sprintf(body, "%s<body bgcolor=""ffffff"">\r\n", body);
-    sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
-    sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
-    sprintf(body, "%s<hr><em>Proxy only implement GET method!</em>\r\n", body);
+typedef struct {
+    int client_fd;
+} Thread_Input;
 
-    /* Print the HTTP response */
-    sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Content-type: text/html\r\n");
-    Rio_writen(fd, buf, strlen(buf));
-    sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
-    Rio_writen(fd, buf, strlen(buf));
-    Rio_writen(fd, body, strlen(body));
+static inline void copy_single_line_str(rio_t *client_rio, char *buffer) {
+    rio_readlineb(client_rio, buffer, MAXLINE);
+    buffer[strlen(buffer)] = '\0';
 }
 
-/*
- * request_handler - build up request to dest server in a new thread
- */
-void *request_handler(void *ptr) {
-    size_t n;
-    int server_fd;
-    rio_t server_rio;
+static inline void extract_hostname(char *src, char *desc) {
+    int copy_length;
+    copy_length = strlen(src + 6) - 2;  
+    strncpy(desc, src + 6, copy_length); 
+    desc[copy_length] = '\0';
+}
 
-    char buffer[MAXBUF];
-    Request_info *request_info = (Request_info*)ptr;
+void parse_request_header(int client_fd, Request *request) {
+    size_t  n;
+    rio_t   client_rio;
+    char buffer[MAXLINE];
 
-    printf("try to connect to %s:%d\n", 
-            request_info->hostname, request_info->port);
-    server_fd = open_clientfd(request_info->hostname, request_info->port);
+    rio_readinitb(&client_rio, client_fd);
+    copy_single_line_str(&client_rio, request->request_str);
+    copy_single_line_str(&client_rio, request->host_str);
+
+    #ifdef DEBUG
+    printf("request str:%s", request->request_str);
+    printf("host str: %s", request->host_str);
+    #endif
     
-    rio_readinitb(&server_rio, server_fd);
-    printf("try to send to server\n");
-    rio_writen(server_fd, request_info->buffer, strlen(request_info->buffer));
-        
-    while ((n = rio_readnb(&server_rio, buffer, MAXBUF)) != 0) { 
-        rio_writen(request_info->client_fd, buffer, n);
+    while ((n = rio_readlineb(&client_rio, buffer, MAXLINE)) != 0) { 
+        #ifdef DEBUG
+        printf("%s", buffer); 
+        #endif
+        if (!strcmp(buffer, "\r\n")) {
+            break;
+        }
     }
-    
-    /*
-    while ((n = rio_readlineb(&server_rio, buffer, MAXBUF)) != 0) { 
-        rio_writen(request_info->client_fd, buffer, strlen(buffer));
-    }*/
-    Close(server_fd);
-    free(ptr);
-    return NULL;
 }
 
-/*
- * scheduler - schedule a thread for each request 
- */
-void scheduler(Request_info *request_info) {
+void modify_request_header(Request *request) {
+    char *str;
+    if ((str = strstr(request->request_str, "HTTP/1.1")) != NULL) {
+        strncpy(str, "HTTP/1.0", 8); 
+    }
+    #ifdef DEBUG
+    printf("modify request str:%s", request->request_str);
+    #endif
+}
+
+void send_client(Response *response) {
+
+}
+
+int check_cache(Request *request, Response *response) {
+    return 0;
+}
+
+static inline int extract_port_number(char *resquest_str) {
+    return 80;
+}
+
+void forward_response(int client_fd, rio_t *server_rio, Response *response) {
+    size_t n;
+    int length;
+    char buffer[MAXLINE];
+    char *content;
+
+    while ((n = rio_readlineb(server_rio, buffer, MAXLINE)) != 0) { 
+        strcat(response->header, buffer); 
+        rio_writen(client_fd, buffer, n);
+        if (strstr(buffer, "Content-Length: ")) {
+            sscanf(buffer + 16, "%d", &length);
+            //sscanf(buffer, "%d", &length);
+            printf("length:%d\n", length);
+        }
+        if (!strcmp(buffer, "\r\n")) {
+            break;
+        }
+    }
+    #ifdef DEBUG
+    printf("response header: %s", response->header);
+    #endif
+    
+    content = (char*)malloc(sizeof(char) * length);
+    while ((n = rio_readnb(server_rio, content, length)) != 0) { 
+        rio_writen(client_fd, content, n);
+    }
+    free(content);
+}
+
+void forward_request(int client_fd, Request *request, Response *response) {
+    rio_t   server_rio;
+    int server_fd;
+    char hostname[MAXLINE];
+    int  port = 80;
+
+    port = extract_port_number(request->request_str);
+    extract_hostname(request->host_str, hostname);
+
+    #ifdef DEBUG
+    printf("hostname:%s\n", hostname);
+    printf("port:%d\n", port);
+    #endif
+
+    server_fd = Open_clientfd(hostname, port);
+
+    rio_readinitb(&server_rio, server_fd);
+    #ifdef DEBUG
+    printf("request_str:%s", request->request_str); 
+    #endif
+    
+    rio_writen(server_fd, request->request_str, strlen(request->request_str));
+    rio_writen(server_fd, request->host_str, strlen(request->host_str));
+    rio_writen(server_fd, "\r\n", strlen("\r\n"));
+    
+    forward_response(client_fd, &server_rio, response);
+}
+
+void *request_handler(void *ptr) {
+    int client_fd = ((Thread_Input*)ptr)->client_fd; 
+    Request request;
+    Response response;
+    parse_request_header(client_fd, &request);
+    modify_request_header(&request);
+    
+    if (check_cache(&request, &response)) {
+        send_client(&response);
+    } else {
+        forward_request(client_fd, &request, &response);
+        //send_client(client_fd, &response);
+    }
+    free(ptr);
+    Close(client_fd);
+    #ifdef DEBUG
+    printf("connection close\n\n");
+    #endif
+    return NULL; 
+}
+
+void scheduler(int client_fd) {
     pthread_t tid;
 
-    printf("create new thread\n");
-    Pthread_create(&tid, NULL, request_handler, request_info);
-    Pthread_join(tid, NULL);
-    printf("harvest thread\n");
-}
+    Thread_Input *thread_input = (Thread_Input*)malloc(sizeof(Thread_Input));
+    thread_input->client_fd = client_fd;
 
-/*
- * uri_parser - extract hostname and port number(if specified)
- */
-void uri_parser(char *str, Request_info *request_info) {
-    int scheme_length = 7;
-    int port_begin;
-    int hostname_length;
-    int request_file_span;
-    char *temp_str;
-    char file[MAXLINE];
-    char buffer[MAXLINE];
-    strncpy(file, "/", 1);
-    file[1] = '\0';
-    temp_str = strstr(str, "http://");
-    if (temp_str == NULL) {
-        scheme_length = 0;
-        temp_str = str;
-    }
-    
-    port_begin = strcspn(temp_str + scheme_length, ":");
-    if (strlen(temp_str + scheme_length) == port_begin) {
-        hostname_length = strcspn(temp_str + scheme_length, "/");
-
-        strncpy(request_info->hostname, 
-                temp_str + scheme_length, hostname_length);
-        request_info->hostname[hostname_length] = '\0';
-
-        request_file_span = scheme_length + hostname_length; 
-        if (strlen(temp_str) != request_file_span) {
-            strncpy(file, temp_str + request_file_span, 
-                    strlen(temp_str) - request_file_span);
-            file[strlen(temp_str) - request_file_span] = '\0';
-        }
-    } else {
-        hostname_length = port_begin;
-        strncpy(request_info->hostname, 
-                temp_str + scheme_length, hostname_length);
-        request_info->hostname[hostname_length] = '\0';
-
-        sscanf(temp_str + scheme_length + port_begin + 1, "%d", 
-                &request_info->port); 
-
-        hostname_length = strcspn(temp_str + scheme_length, "/");
-        request_file_span = scheme_length + hostname_length; 
-        if (strlen(temp_str) != request_file_span) {
-            strncpy(file, temp_str + request_file_span, 
-                    strlen(temp_str) - request_file_span);
-            file[strlen(temp_str) - request_file_span] = '\0';
-        }
-    }
-
-    //sprintf(buffer, "GET %s %s\r\nHost: www.google.com\r\n\n\r\n", file, request_info->version);
-    sprintf(buffer, "GET %s HTTP/1.0\r\n\n\r\n", file);
-    strcpy(request_info->buffer, buffer);
-}
-
-/*
- * init_request_info - initliaze and build up request info struct 
- */
-Request_info * init_request_info(int client_fd, char *buffer) {
-    Request_info *request_info;
-
-    request_info = (Request_info*)Malloc(sizeof(Request_info));
-    request_info->client_fd = client_fd;
-    request_info->port = 80;
-    strncpy(request_info->buffer, buffer, MAXLINE);
-    sscanf(buffer, "%s %s %s", request_info->method, 
-            request_info->uri, request_info->version);
-    uri_parser(request_info->uri, request_info);
-    
-    return request_info;
-}
-
-/*
- * parse_request - wrapper like function for scheduler  
- */
-void parse_request(int client_fd) {
-    size_t n;
-    char buffer[MAXLINE];
-    char method[MAXLINE];
-    rio_t client_rio;
-    Request_info *request_info = NULL;
-    
-    rio_readinitb(&client_rio, client_fd);
-    while ((n = rio_readlineb(&client_rio, buffer, MAXLINE)) != 0 &&
-            strcmp(buffer, "\r\n")) { 
-
-        printf("server received from client %u bytes, %s", n, buffer);
-        sscanf(buffer, "%s", method);
-        
-        /* only process GET method from client right now*/
-        if (!strcasecmp(method, "GET")) {
-            printf("process request %s", buffer);
-            if ((request_info = init_request_info(client_fd, buffer)) != NULL)
-                scheduler(request_info);
-        }
-    }
+    Pthread_create(&tid, NULL, request_handler, thread_input);
+    Pthread_detach(tid);
 }
 
 int main (int argc, char *argv []) {
-    int listenfd, connfd, port;
+    int listen_fd, port;
+    int client_fd;
     socklen_t socket_length;
-    char * ip_str;
     struct sockaddr_in client_socket;
-    struct hostent *host_info;
 
     if (argc != 2) {
 	    fprintf(stderr, "usage: %s <port>\n", argv[0]);
 	    exit(0);
     }
+
     port = atoi(argv[1]);
-    listenfd = Open_listenfd(port);
+    listen_fd = Open_listenfd(port);
+    socket_length = sizeof(client_socket);
 
     while (1) {
-        socket_length = sizeof(client_socket);
-	    connfd = Accept(listenfd, (SA*)&client_socket, &socket_length);
-
-        host_info = Gethostbyaddr((const char*)&client_socket.sin_addr.s_addr,
-                sizeof(client_socket.sin_addr.s_addr), AF_INET);
-        ip_str = inet_ntoa(client_socket.sin_addr);
-
-        printf("server establish connection with %s(%s)\n",
-                host_info->h_name, ip_str);
-
-        parse_request(connfd);
-        printf("request complete, connectin close\n\n\n"); 
-        Close(connfd); 
+        client_fd = Accept(listen_fd, (SA*)&client_socket, &socket_length);   
+        scheduler(client_fd);
     }
-    exit(0);
 }
