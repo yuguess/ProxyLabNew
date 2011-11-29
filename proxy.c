@@ -9,7 +9,7 @@
 
 #define MAX_OBJECT_SIZE ((1 << 10) * 100) 
 #define MAX_CACHE_SIZE (1 << 20)
-
+pthread_mutex_t mutex_lock;
 int min(int a, int b) {
     return a > b ? b : a;
 }
@@ -19,14 +19,16 @@ typedef struct Cache_Block Cache_Block;
 struct Cache_Block{
     unsigned long key;
     char *content;
-    size_t content_size;
+    int content_size;
     time_t time_stamp;
     Cache_Block *next_block;
+    Cache_Block *pre_block;
 };
 
 typedef struct {
-    size_t size; 
-    Cache_Block *start; 
+    int size; 
+    Cache_Block *head; 
+    Cache_Block *tail;
 } Cache;
 
 typedef struct {
@@ -37,7 +39,7 @@ typedef struct {
 typedef struct {
     char header[MAXLINE];
     char *content;
-    int content_length;
+    int content_size;
 } Response;
 
 typedef struct {
@@ -77,11 +79,7 @@ void modify_request_header(Request *request) {
 }
 
 void send_client(Response *response) {
-
-}
-
-int check_cache(Request *request, Response *response) {
-    return 0;
+    printf("send_client !!!!!!!!!!\n");
 }
 
 static inline int extract_port_number(char *resquest_str) {
@@ -131,13 +129,14 @@ void forward_response(int client_fd, rio_t *server_rio, Response *response) {
     #ifdef DEBUG 
     printf("read byte size:%u\n", sum);
     #endif
-   /* 
+    
     if (sum <= MAX_OBJECT_SIZE) {
         response->content = Malloc(sizeof(char) * sum);
-        response->content_length = sum;
+        memcpy(response->content, content_buffer, sum); 
+        response->content_size = sum;
     } else {
-        response->content_length = sum;
-    }*/
+        response->content_size = sum;
+    }
 }
 
 void forward_request(int client_fd, Request *request, Response *response) {
@@ -192,14 +191,124 @@ void parse_request_header(int client_fd, Request *request) {
     }
 }
 
-void save_to_cache(Response *response) {
-    //lock !
-    /*
-    if (cache) {
+Cache_Block* is_in_cache(unsigned long key) {
+    Cache_Block *cache_block = cache.head;
+    while (cache_block != NULL) {
+        if (cache_block->key == key) {
+            printf("key: %lu\n", key);
+            return cache_block;
+        }
+        cache_block = cache_block->next_block;
+    }
+    return NULL;
+}
 
-    }*/
 
-    //unlock !
+
+Cache_Block *build_cache_block(Request *request, Response *response) {
+    Cache_Block *cache_block;
+    cache_block = (Cache_Block*)Malloc(sizeof(Cache_Block));
+    cache_block->time_stamp = time(NULL);
+    cache_block->key = crc32(request->request_str, strlen(request->request_str));
+    cache_block->content_size = response->content_size;
+    cache_block->content = response->content;
+    cache_block->next_block = NULL;
+    cache_block->pre_block = NULL;
+    printf("time_stamp:%ld\n", cache_block->time_stamp);
+    printf("hash key:%lu\n", cache_block->key);
+    return cache_block;
+}
+
+void add_cache_block(Cache_Block *cache_block) {
+    if (cache.head == NULL) {
+        cache.head = cache_block;
+        cache.tail = cache_block;
+    } else {
+        if (cache.head->pre_block == NULL) {
+            cache.head->pre_block = cache_block;
+            cache_block->next_block = cache.head;
+            cache.head = cache_block;
+        } else {
+            fprintf(stderr, "add_cache_block error\n");
+            abort();
+        }
+    }
+    cache.size += cache_block->content_size;
+}
+
+void delete_cache_block(Cache_Block *cache_block) {
+    Cache_Block *pre_block = cache_block->pre_block;
+    Cache_Block *next_block = cache_block->next_block;
+    if (cache_block == NULL) {
+        fprintf(stderr, "delete a empty block\n");
+    }
+
+    if (pre_block != NULL) {
+        pre_block->next_block = next_block;
+    } else {
+        if (cache.head == cache_block) {
+            cache.head = next_block; 
+        } else {
+            fprintf(stderr, "delete_cache_block error, delete head block\n");
+        }
+    }
+
+    if (next_block != NULL) {
+        next_block->pre_block = pre_block;
+    } else {
+        if (cache.tail == cache_block) {
+            cache.tail = pre_block;
+        } else {
+            fprintf(stderr, "delete_cache_block error, delete tail block\n");
+        }
+    }
+    free(cache_block->content);
+    free(cache_block);
+    cache.size -= cache_block->content_size;
+}
+
+int check_cache(Request *request, Response *response) {
+
+    /* entering critical section lock ! */
+    pthread_mutex_lock(&mutex_lock);
+    unsigned long key = crc32(request->request_str, 
+            strlen(request->request_str));    
+    Cache_Block *cache_block = NULL;
+    if ((cache_block = is_in_cache(key)) != NULL) {
+        if (cache_block == NULL) {
+            printf("return NULL block\n");
+            abort();
+        }
+        response->content = cache_block->content; 
+        response->content_size = cache_block->content_size;
+        cache_block->time_stamp = time(NULL); 
+
+        delete_cache_block(cache_block);
+        add_cache_block(cache_block);
+        pthread_mutex_unlock(&mutex_lock);
+        return 1;
+    } else {
+        pthread_mutex_unlock(&mutex_lock);
+        return 0;
+    }
+}
+
+void save_to_cache(Request *request, Response *response) {
+    Cache_Block *cache_block;
+    cache_block = build_cache_block(request, response);
+
+    /* entering critical area, add lock ! */
+    pthread_mutex_lock(&mutex_lock);
+    printf("thread in critical area\n");
+    printf("length: %d\n", response->content_size);
+    
+    if (cache.size + response->content_size > MAX_CACHE_SIZE) {
+        while (cache.size + response->content_size > MAX_CACHE_SIZE) {
+            delete_cache_block(cache.tail);
+        }
+    }
+    add_cache_block(cache_block);
+    pthread_mutex_unlock(&mutex_lock);
 }
 
 void *request_handler(void *ptr) {
@@ -214,10 +323,8 @@ void *request_handler(void *ptr) {
         send_client(&response);
     } else {
         forward_request(client_fd, &request, &response);
-        /*
-        if (response.length <= MAX_OBJECT_SIZE)
-            save_to_cache(&response);
-            */
+        if (response.content_size <= MAX_OBJECT_SIZE)
+            save_to_cache(&request, &response);
     }
     free(ptr);
     Close(client_fd);
@@ -233,12 +340,15 @@ void scheduler(int client_fd) {
     Thread_Input *thread_input = (Thread_Input*)malloc(sizeof(Thread_Input));
     thread_input->client_fd = client_fd;
 
+    pthread_mutex_init(&mutex_lock, NULL);
+
     Pthread_create(&tid, NULL, request_handler, thread_input);
     Pthread_detach(tid);
 }
 
 void init_cache() {
-    cache.start = NULL;
+    cache.head = NULL;
+    cache.tail = NULL;
     cache.size = 0;
 }
 
@@ -266,5 +376,6 @@ int main (int argc, char *argv []) {
         client_fd = Accept(listen_fd, (SA*)&client_socket, &socket_length);   
         scheduler(client_fd);
     }
+    pthread_mutex_destroy(&mutex_lock);
     clean_cache();
 }
