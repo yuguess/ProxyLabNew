@@ -9,6 +9,8 @@
 
 #define MAX_OBJECT_SIZE ((1 << 10) * 100) 
 #define MAX_CACHE_SIZE (1 << 20)
+char test[MAX_OBJECT_SIZE];
+int flag = 0;
 pthread_mutex_t mutex_lock;
 int min(int a, int b) {
     return a > b ? b : a;
@@ -78,13 +80,33 @@ void modify_request_header(Request *request) {
     #endif
 }
 
-void send_client(Response *response) {
+void send_client(int client_fd, Response *response) {
     printf("send_client !!!!!!!!!!\n");
+    if (response != NULL) {
+        if (response->content != NULL) {
+            printf("send size %d\n", response->content_size);
+            if (rio_writen(client_fd, response->content, response->content_size) < 0) {
+                proxy_error("rio_writen in send_client error");  
+            }
+            /*
+            if (rio_writen(client_fd, response->content, response->content_size) < 0) {
+                proxy_error("rio_writen in send_client error");  
+            }*/
+        } else {
+            fprintf(stderr, "error in send_client, content is NULL\n"); 
+            abort();
+        }
+    } else {
+        fprintf(stderr, "error in send_client, response is NULL\n"); 
+        abort();
+    }
 }
 
 static inline int extract_port_number(char *resquest_str) {
     return 80;
 }
+
+
 
 void forward_response(int client_fd, rio_t *server_rio, Response *response) {
     size_t n;
@@ -132,11 +154,18 @@ void forward_response(int client_fd, rio_t *server_rio, Response *response) {
     
     if (sum <= MAX_OBJECT_SIZE) {
         response->content = Malloc(sizeof(char) * sum);
-        memcpy(response->content, content_buffer, sum); 
+        memcpy(response->content, content_buffer, sum * sizeof(char)); 
+        
+        if (flag == 0) {
+        strncpy(test, content_buffer, sum);
+        test[sum] = '\0';
+        flag = 1;
+        }
         response->content_size = sum;
     } else {
         response->content_size = sum;
     }
+    //fwrite(response->content, sizeof(char), sum, stdout);
 }
 
 void forward_request(int client_fd, Request *request, Response *response) {
@@ -203,8 +232,6 @@ Cache_Block* is_in_cache(unsigned long key) {
     return NULL;
 }
 
-
-
 Cache_Block *build_cache_block(Request *request, Response *response) {
     Cache_Block *cache_block;
     cache_block = (Cache_Block*)Malloc(sizeof(Cache_Block));
@@ -236,7 +263,7 @@ void add_cache_block(Cache_Block *cache_block) {
     cache.size += cache_block->content_size;
 }
 
-void delete_cache_block(Cache_Block *cache_block) {
+void delete_link(Cache_Block *cache_block) {
     Cache_Block *pre_block = cache_block->pre_block;
     Cache_Block *next_block = cache_block->next_block;
     if (cache_block == NULL) {
@@ -248,6 +275,7 @@ void delete_cache_block(Cache_Block *cache_block) {
     } else {
         if (cache.head == cache_block) {
             cache.head = next_block; 
+            cache.head->pre_block = NULL;
         } else {
             fprintf(stderr, "delete_cache_block error, delete head block\n");
         }
@@ -258,12 +286,23 @@ void delete_cache_block(Cache_Block *cache_block) {
     } else {
         if (cache.tail == cache_block) {
             cache.tail = pre_block;
+            pre_block->next_block = NULL; 
         } else {
             fprintf(stderr, "delete_cache_block error, delete tail block\n");
         }
     }
+    cache_block->pre_block = NULL;
+    cache_block->next_block = NULL;
+}
+
+void free_cache_block(Cache_Block *cache_block) {
     free(cache_block->content);
     free(cache_block);
+}
+
+void delete_cache_block(Cache_Block *cache_block) {
+    delete_link(cache_block);
+    free_cache_block(cache_block);
     cache.size -= cache_block->content_size;
 }
 
@@ -283,8 +322,9 @@ int check_cache(Request *request, Response *response) {
         response->content_size = cache_block->content_size;
         cache_block->time_stamp = time(NULL); 
 
-        delete_cache_block(cache_block);
+        delete_link(cache_block);
         add_cache_block(cache_block);
+        
         pthread_mutex_unlock(&mutex_lock);
         return 1;
     } else {
@@ -320,7 +360,7 @@ void *request_handler(void *ptr) {
     modify_request_header(&request);
     
     if (check_cache(&request, &response)) {
-        send_client(&response);
+        send_client(client_fd, &response);
     } else {
         forward_request(client_fd, &request, &response);
         if (response.content_size <= MAX_OBJECT_SIZE)
@@ -334,24 +374,31 @@ void *request_handler(void *ptr) {
     return NULL; 
 }
 
+/*
+ * scheduler -
+ */
 void scheduler(int client_fd) {
     pthread_t tid;
 
     Thread_Input *thread_input = (Thread_Input*)malloc(sizeof(Thread_Input));
     thread_input->client_fd = client_fd;
 
-    pthread_mutex_init(&mutex_lock, NULL);
-
     Pthread_create(&tid, NULL, request_handler, thread_input);
     Pthread_detach(tid);
 }
 
+/*
+ * init_cache - initialize global variable cache
+ */
 void init_cache() {
     cache.head = NULL;
     cache.tail = NULL;
     cache.size = 0;
 }
 
+/*
+ * clean_cache - free the cache memory(not impelmented)
+ */
 void clean_cache() {
 
 }
@@ -362,14 +409,16 @@ int main (int argc, char *argv []) {
     socklen_t socket_length;
     struct sockaddr_in client_socket;
 
+    pthread_mutex_init(&mutex_lock, NULL);
     init_cache();
+
     if (argc != 2) {
 	    fprintf(stderr, "usage: %s <port>\n", argv[0]);
 	    exit(0);
     }
 
     port = atoi(argv[1]);
-    listen_fd = open_listenfd(port);
+    listen_fd = Open_listenfd(port);
     socket_length = sizeof(client_socket);
 
     while (1) {
