@@ -194,6 +194,8 @@ void forward_request(int client_fd, Request *request, Response *response) {
     rio_writen(server_fd, "\r\n", strlen("\r\n"));
     
     forward_response(client_fd, &server_rio, response);
+
+    Close(server_fd);
 }
 
 void parse_request_header(int client_fd, Request *request) {
@@ -224,7 +226,10 @@ Cache_Block* is_in_cache(unsigned long key) {
     Cache_Block *cache_block = cache.head;
     while (cache_block != NULL) {
         if (cache_block->key == key) {
-            printf("key: %lu\n", key);
+            #ifdef DEBUG
+            printf("in cache ! key: %lu\n", key);
+            //fwrite(cache_block->content, sizeof(char), cache_block->content_size, stdout);
+            #endif
             return cache_block;
         }
         cache_block = cache_block->next_block;
@@ -269,13 +274,13 @@ void delete_link(Cache_Block *cache_block) {
     if (cache_block == NULL) {
         fprintf(stderr, "delete a empty block\n");
     }
-
     if (pre_block != NULL) {
         pre_block->next_block = next_block;
     } else {
         if (cache.head == cache_block) {
             cache.head = next_block; 
-            cache.head->pre_block = NULL;
+            if (cache.head != NULL)
+                cache.head->pre_block = NULL;
         } else {
             fprintf(stderr, "delete_cache_block error, delete head block\n");
         }
@@ -286,7 +291,8 @@ void delete_link(Cache_Block *cache_block) {
     } else {
         if (cache.tail == cache_block) {
             cache.tail = pre_block;
-            pre_block->next_block = NULL; 
+            if (cache.tail != NULL)
+                cache.tail->next_block = NULL; 
         } else {
             fprintf(stderr, "delete_cache_block error, delete tail block\n");
         }
@@ -324,7 +330,6 @@ int check_cache(Request *request, Response *response) {
 
         delete_link(cache_block);
         add_cache_block(cache_block);
-        
         pthread_mutex_unlock(&mutex_lock);
         return 1;
     } else {
