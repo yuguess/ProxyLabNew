@@ -9,8 +9,6 @@
 
 #define MAX_OBJECT_SIZE ((1 << 10) * 100) 
 #define MAX_CACHE_SIZE (1 << 20)
-char test[MAX_OBJECT_SIZE];
-int flag = 0;
 pthread_mutex_t mutex_lock;
 int min(int a, int b) {
     return a > b ? b : a;
@@ -81,17 +79,15 @@ void modify_request_header(Request *request) {
 }
 
 void send_client(int client_fd, Response *response) {
+    #ifdef DEBUG
     printf("send_client !!!!!!!!!!\n");
+    #endif
     if (response != NULL) {
         if (response->content != NULL) {
-            printf("send size %d\n", response->content_size);
-            if (rio_writen(client_fd, response->content, response->content_size) < 0) {
+            if (rio_writen(client_fd, response->content, 
+                        response->content_size) < 0) {
                 proxy_error("rio_writen in send_client error");  
             }
-            /*
-            if (rio_writen(client_fd, response->content, response->content_size) < 0) {
-                proxy_error("rio_writen in send_client error");  
-            }*/
         } else {
             fprintf(stderr, "error in send_client, content is NULL\n"); 
             abort();
@@ -108,15 +104,21 @@ static inline int extract_port_number(char *resquest_str) {
 
 
 
-void forward_response(int client_fd, rio_t *server_rio, Response *response) {
+void forward_response(int client_fd, int server_fd, Response *response) {
+    #ifdef DEBUG
+    printf("enter forward_response\n");
+    #endif
     size_t n;
     int length = -1;
     char header_buffer[MAXLINE];
     char content_buffer[MAX_OBJECT_SIZE];
     int read_size;
-    
-    while ((n = rio_readlineb(server_rio, header_buffer, MAXLINE)) != 0) { 
+    rio_t   server_rio;
+
+    rio_readinitb(&server_rio, server_fd);
+    while ((n = rio_readlineb(&server_rio, header_buffer, MAXLINE)) != 0) { 
         strcat(response->header, header_buffer); 
+        
         /*
         if (rio_writen(client_fd, header_buffer, n) < 0) {
             proxy_error("rio_writen in forward_response header error");  
@@ -136,11 +138,11 @@ void forward_response(int client_fd, rio_t *server_rio, Response *response) {
         read_size = min(length, MAX_OBJECT_SIZE);
     
     #ifdef DEBUG
-    printf("response header: %s", response->header);
+    printf("finish response header\n");
     #endif
 
     int sum = 0;
-    while ((n = rio_readnb(server_rio, content_buffer, read_size)) != 0) { 
+    while ((n = rio_readnb(&server_rio, content_buffer, read_size)) != 0) { 
         if (rio_writen(client_fd, content_buffer, n) < 0) {
             proxy_error("rio_writen in forward_response content error");  
             Close(client_fd);
@@ -155,20 +157,16 @@ void forward_response(int client_fd, rio_t *server_rio, Response *response) {
     if (sum <= MAX_OBJECT_SIZE) {
         response->content = Malloc(sizeof(char) * sum);
         memcpy(response->content, content_buffer, sum * sizeof(char)); 
-        
-        if (flag == 0) {
-        strncpy(test, content_buffer, sum);
-        test[sum] = '\0';
-        flag = 1;
-        }
         response->content_size = sum;
     } else {
         response->content_size = sum;
     }
-    //fwrite(response->content, sizeof(char), sum, stdout);
+    #ifdef DEBUG
+    printf("leave forward_response\n");
+    #endif
 }
 
-void forward_request(int client_fd, Request *request, Response *response) {
+int forward_request(int client_fd, Request *request, Response *response) {
     rio_t   server_rio;
     int server_fd;
     char hostname[MAXLINE];
@@ -182,7 +180,10 @@ void forward_request(int client_fd, Request *request, Response *response) {
     printf("port:%d\n", port);
     #endif
 
-    server_fd = open_clientfd(hostname, port);
+    if ((server_fd = open_clientfd(hostname, port)) < 0) {
+       fprintf(stderr, "Warning connection refused !\n"); 
+       return -1;
+    }
 
     rio_readinitb(&server_rio, server_fd);
     #ifdef DEBUG
@@ -193,9 +194,9 @@ void forward_request(int client_fd, Request *request, Response *response) {
     rio_writen(server_fd, request->host_str, strlen(request->host_str));
     rio_writen(server_fd, "\r\n", strlen("\r\n"));
     
-    forward_response(client_fd, &server_rio, response);
-
+    forward_response(client_fd, server_fd, response);
     Close(server_fd);
+    return 1;
 }
 
 void parse_request_header(int client_fd, Request *request) {
@@ -228,7 +229,6 @@ Cache_Block* is_in_cache(unsigned long key) {
         if (cache_block->key == key) {
             #ifdef DEBUG
             printf("in cache ! key: %lu\n", key);
-            //fwrite(cache_block->content, sizeof(char), cache_block->content_size, stdout);
             #endif
             return cache_block;
         }
@@ -246,12 +246,18 @@ Cache_Block *build_cache_block(Request *request, Response *response) {
     cache_block->content = response->content;
     cache_block->next_block = NULL;
     cache_block->pre_block = NULL;
+    #ifdef DEBUG
     printf("time_stamp:%ld\n", cache_block->time_stamp);
     printf("hash key:%lu\n", cache_block->key);
+    #endif
     return cache_block;
 }
 
 void add_cache_block(Cache_Block *cache_block) {
+    if (cache_block == NULL) {
+        fprintf(stderr, "error in add_cache_block, try to add empty block\n");
+        abort();
+    }
     if (cache.head == NULL) {
         cache.head = cache_block;
         cache.tail = cache_block;
@@ -339,14 +345,20 @@ int check_cache(Request *request, Response *response) {
 }
 
 void save_to_cache(Request *request, Response *response) {
+    #ifdef DEBUG
+    printf("save_to_cache function");
+    #endif
     Cache_Block *cache_block;
     cache_block = build_cache_block(request, response);
 
     /* entering critical area, add lock ! */
     pthread_mutex_lock(&mutex_lock);
+
+    #ifdef DEBUG
     printf("thread in critical area\n");
     printf("length: %d\n", response->content_size);
-    
+    #endif
+
     if (cache.size + response->content_size > MAX_CACHE_SIZE) {
         while (cache.size + response->content_size > MAX_CACHE_SIZE) {
             delete_cache_block(cache.tail);
@@ -354,11 +366,18 @@ void save_to_cache(Request *request, Response *response) {
     }
     add_cache_block(cache_block);
     pthread_mutex_unlock(&mutex_lock);
+
+    #ifdef DEBUG
+    printf("leave save_to_cache\n");
+    #endif
 }
 
 void *request_handler(void *ptr) {
+    #ifdef DEBUG
+    printf("enter request_handler\n");
+    #endif
+
     int client_fd = ((Thread_Input*)ptr)->client_fd; 
-    printf("client_fd:%d\n", client_fd);
     Request request;
     Response response;
     parse_request_header(client_fd, &request);
@@ -367,14 +386,19 @@ void *request_handler(void *ptr) {
     if (check_cache(&request, &response)) {
         send_client(client_fd, &response);
     } else {
-        forward_request(client_fd, &request, &response);
-        if (response.content_size <= MAX_OBJECT_SIZE)
-            save_to_cache(&request, &response);
+        if (forward_request(client_fd, &request, &response) < 0) {
+            Close(client_fd);
+            return NULL;
+        } else {
+            if (response.content_size <= MAX_OBJECT_SIZE)
+                save_to_cache(&request, &response);
+        }
     }
     free(ptr);
     Close(client_fd);
     #ifdef DEBUG
     printf("connection close\n\n");
+    printf("leave request_handler\n");
     #endif
     return NULL; 
 }
@@ -389,7 +413,8 @@ void scheduler(int client_fd) {
     thread_input->client_fd = client_fd;
 
     Pthread_create(&tid, NULL, request_handler, thread_input);
-    Pthread_detach(tid);
+    Pthread_join(tid, NULL);
+    //Pthread_detach(tid);
 }
 
 /*
