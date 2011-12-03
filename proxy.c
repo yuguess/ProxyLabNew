@@ -1,57 +1,90 @@
 /*
- * Name     : Dalong Cheng, Fan Xiang
+ * File     : proxy.c
+ * Author   : Dalong Cheng, Fan Xiang
  * Andrew ID: dalongc, fanx
+ * 
+ * General Code Structure
+ * 1. Use producer and consumer model to handle client request 
+ * 2. Use link list to cache request file's crc32 hash value 
+ * 3. Use LRU policy to evivt cache block
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "csapp.h"
+#include "sbuf.h"
+#include "crc32.h"
+#include "cache.h"
 
-#define MAX_OBJECT_SIZE ((1 << 10) * 100) 
-#define MAX_CACHE_SIZE (1 << 20)
-pthread_mutex_t mutex_lock;
-int min(int a, int b) {
+/* Global variables */
+sbuf_t sbuf; /* shared buffer of connected descriptors */
+
+/* Internal function prototypes */
+static inline int min(int, int);
+static inline void copy_single_line_str(rio_t *, char *);
+static inline void extract_hostname(char *, char *);
+static inline int extract_port_number(char *);
+void modify_request_header(Request *);
+void send_client(int, Response *);
+void forward_response(int, int, Response *);
+void proxy_error(char *);
+int forward_request(int, Request *, Response *);
+void parse_request_header(int, Request *);
+void *request_handler(int);
+void *worker_thread(void *);
+
+/* Macto definition*/
+#define NTHREADS  40
+#define SBUFSIZE  20
+
+int main (int argc, char *argv []) {
+    int listen_fd, port;
+    int client_fd;
+    int i;
+    pthread_t tid;
+    
+    socklen_t socket_length;
+    struct sockaddr_in client_socket;
+
+    pthread_mutex_init(&mutex_lock, NULL);
+    init_cache();
+
+    if (argc != 2) {
+	    fprintf(stderr, "usage: %s <port>\n", argv[0]);
+	    exit(0);
+    }
+    port = atoi(argv[1]);   
+    socket_length = sizeof(client_socket);
+    /* add SIGPIPE handler */
+    Signal(SIGPIPE, SIG_IGN);
+
+    /* initialize worker thread, then initialize buffer
+     * for producer-consumer model */
+    sbuf_init(&sbuf, SBUFSIZE);
+    for (i = 0; i < NTHREADS; i++)
+        Pthread_create(&tid, NULL, worker_thread, NULL);
+
+    listen_fd = Open_listenfd(port);
+
+    while (1) {
+        client_fd = Accept(listen_fd, (SA*)&client_socket, &socket_length);
+        sbuf_insert(&sbuf, client_fd);
+    }
+    pthread_mutex_destroy(&mutex_lock);
+    clean_cache();
+}
+
+/* 
+ * min - return min value of two value 
+ */
+static inline int min(int a, int b) {
     return a > b ? b : a;
 }
 
-typedef struct Cache_Block Cache_Block;
-
-struct Cache_Block{
-    unsigned long key;
-    char *content;
-    int content_size;
-    time_t time_stamp;
-    Cache_Block *next_block;
-    Cache_Block *pre_block;
-};
-
-typedef struct {
-    int size; 
-    Cache_Block *head; 
-    Cache_Block *tail;
-} Cache;
-
-typedef struct {
-    char request_str[MAXLINE]; 
-    char host_str[MAXLINE];
-} Request;
-
-typedef struct {
-    char header[MAXLINE];
-    char *content;
-    int content_size;
-} Response;
-
-typedef struct {
-    int client_fd;
-} Thread_Input;
-
-Cache cache;
-
-void proxy_error(char *msg) {
-    fprintf(stderr, "%s: %s\n", msg, strerror(errno));
-}
-
+/* 
+ * copy_single_line_str - store a line of str 
+ */
 static inline void copy_single_line_str(rio_t *client_rio, char *buffer) {
     if (rio_readlineb(client_rio, buffer, MAXLINE) < 0) {
         proxy_error("copy_single_lienstr error");
@@ -59,6 +92,9 @@ static inline void copy_single_line_str(rio_t *client_rio, char *buffer) {
     buffer[strlen(buffer)] = '\0';
 }
 
+/* 
+ * extract_hostname - extract hostname from string 
+ */
 static inline void extract_hostname(char *src, char *desc) {
     int copy_length;
     copy_length = strlen(src + 6) - 2;  
@@ -66,6 +102,16 @@ static inline void extract_hostname(char *src, char *desc) {
     desc[copy_length] = '\0';
 }
 
+/* 
+ * extract_port_number - extract port from input str 
+ */
+static inline int extract_port_number(char *resquest_str) {
+    return 80;
+}
+
+/* 
+ * modify_request_header - modify input str into HTTP/1.0 request 
+ */
 void modify_request_header(Request *request) {
     char *str;
     if ((str = strstr(request->request_str, "HTTP/1.1")) != NULL) {
@@ -78,9 +124,12 @@ void modify_request_header(Request *request) {
     #endif
 }
 
+/* 
+ * send_client - send resposne content to client
+ */
 void send_client(int client_fd, Response *response) {
     #ifdef DEBUG
-    printf("send_client !!!!!!!!!!\n");
+    printf("enter send_client \n");
     #endif
     if (response != NULL) {
         if (response->content != NULL) {
@@ -98,10 +147,10 @@ void send_client(int client_fd, Response *response) {
     }
 }
 
-static inline int extract_port_number(char *resquest_str) {
-    return 80;
-}
-
+/* 
+ * forward_response - send request to server, then store resposne content
+ * in cache if necessary 
+ */
 void forward_response(int client_fd, int server_fd, Response *response) {
     #ifdef DEBUG
     printf("enter forward_response\n");
@@ -142,7 +191,7 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     while ((n = rio_readnb(&server_rio, content_buffer, read_size)) != 0) { 
         if (rio_writen(client_fd, content_buffer, n) < 0) {
             proxy_error("rio_writen in forward_response content error");  
-            Close(client_fd);
+            close(client_fd);
         }
         sum += n;
     }
@@ -163,6 +212,16 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     #endif
 }
 
+/* 
+ * proxy_error - proxy error wrapper function 
+ */
+void proxy_error(char *msg) {
+    fprintf(stderr, "%s: %s\n", msg, strerror(errno));
+}
+
+/* 
+ * forward_request - send request from client to its destination server 
+ */
 int forward_request(int client_fd, Request *request, Response *response) {
     rio_t   server_rio;
     int server_fd;
@@ -176,7 +235,6 @@ int forward_request(int client_fd, Request *request, Response *response) {
     printf("hostname:%s\n", hostname);
     printf("port:%d\n", port);
     #endif
-
     if ((server_fd = open_clientfd(hostname, port)) < 0) {
        fprintf(stderr, "Warning connection refused !\n"); 
        return -1;
@@ -192,10 +250,13 @@ int forward_request(int client_fd, Request *request, Response *response) {
     rio_writen(server_fd, "\r\n", strlen("\r\n"));
     
     forward_response(client_fd, server_fd, response);
-    Close(server_fd);
+    close(server_fd);
     return 1;
 }
 
+/* 
+ * parse_request_header - parse request header extract useful information 
+ */
 void parse_request_header(int client_fd, Request *request) {
     size_t  n;
     rio_t   client_rio;
@@ -220,161 +281,14 @@ void parse_request_header(int client_fd, Request *request) {
     }
 }
 
-Cache_Block* is_in_cache(unsigned long key) {
-    Cache_Block *cache_block = cache.head;
-    while (cache_block != NULL) {
-        if (cache_block->key == key) {
-            #ifdef DEBUG
-            printf("in cache ! key: %lu\n", key);
-            #endif
-            return cache_block;
-        }
-        cache_block = cache_block->next_block;
-    }
-    return NULL;
-}
-
-Cache_Block *build_cache_block(Request *request, Response *response) {
-    Cache_Block *cache_block;
-    cache_block = (Cache_Block*)Malloc(sizeof(Cache_Block));
-    cache_block->time_stamp = time(NULL);
-    cache_block->key = crc32(request->request_str, strlen(request->request_str));
-    cache_block->content_size = response->content_size;
-    cache_block->content = response->content;
-    cache_block->next_block = NULL;
-    cache_block->pre_block = NULL;
-    #ifdef DEBUG
-    printf("time_stamp:%ld\n", cache_block->time_stamp);
-    printf("hash key:%lu\n", cache_block->key);
-    #endif
-    return cache_block;
-}
-
-void add_cache_block(Cache_Block *cache_block) {
-    if (cache_block == NULL) {
-        fprintf(stderr, "error in add_cache_block, try to add empty block\n");
-        abort();
-    }
-    if (cache.head == NULL) {
-        cache.head = cache_block;
-        cache.tail = cache_block;
-    } else {
-        if (cache.head->pre_block == NULL) {
-            cache.head->pre_block = cache_block;
-            cache_block->next_block = cache.head;
-            cache.head = cache_block;
-        } else {
-            fprintf(stderr, "add_cache_block error\n");
-            abort();
-        }
-    }
-    cache.size += cache_block->content_size;
-}
-
-void delete_link(Cache_Block *cache_block) {
-    Cache_Block *pre_block = cache_block->pre_block;
-    Cache_Block *next_block = cache_block->next_block;
-    if (cache_block == NULL) {
-        fprintf(stderr, "delete a empty block\n");
-    }
-    if (pre_block != NULL) {
-        pre_block->next_block = next_block;
-    } else {
-        if (cache.head == cache_block) {
-            cache.head = next_block; 
-            if (cache.head != NULL)
-                cache.head->pre_block = NULL;
-        } else {
-            fprintf(stderr, "delete_cache_block error, delete head block\n");
-        }
-    }
-
-    if (next_block != NULL) {
-        next_block->pre_block = pre_block;
-    } else {
-        if (cache.tail == cache_block) {
-            cache.tail = pre_block;
-            if (cache.tail != NULL)
-                cache.tail->next_block = NULL; 
-        } else {
-            fprintf(stderr, "delete_cache_block error, delete tail block\n");
-        }
-    }
-    cache_block->pre_block = NULL;
-    cache_block->next_block = NULL;
-}
-
-void free_cache_block(Cache_Block *cache_block) {
-    free(cache_block->content);
-    free(cache_block);
-}
-
-void delete_cache_block(Cache_Block *cache_block) {
-    delete_link(cache_block);
-    free_cache_block(cache_block);
-    cache.size -= cache_block->content_size;
-}
-
-int check_cache(Request *request, Response *response) {
-
-    /* entering critical section lock ! */
-    pthread_mutex_lock(&mutex_lock);
-    unsigned long key = crc32(request->request_str, 
-            strlen(request->request_str));    
-    Cache_Block *cache_block = NULL;
-    if ((cache_block = is_in_cache(key)) != NULL) {
-        if (cache_block == NULL) {
-            printf("return NULL block\n");
-            abort();
-        }
-        response->content = cache_block->content; 
-        response->content_size = cache_block->content_size;
-        cache_block->time_stamp = time(NULL); 
-
-        delete_link(cache_block);
-        add_cache_block(cache_block);
-        pthread_mutex_unlock(&mutex_lock);
-        return 1;
-    } else {
-        pthread_mutex_unlock(&mutex_lock);
-        return 0;
-    }
-}
-
-void save_to_cache(Request *request, Response *response) {
-    #ifdef DEBUG
-    printf("save_to_cache function");
-    #endif
-    Cache_Block *cache_block;
-    cache_block = build_cache_block(request, response);
-
-    /* entering critical area, add lock ! */
-    pthread_mutex_lock(&mutex_lock);
-
-    #ifdef DEBUG
-    printf("thread in critical area\n");
-    printf("length: %d\n", response->content_size);
-    #endif
-
-    if (cache.size + response->content_size > MAX_CACHE_SIZE) {
-        while (cache.size + response->content_size > MAX_CACHE_SIZE) {
-            delete_cache_block(cache.tail);
-        }
-    }
-    add_cache_block(cache_block);
-    pthread_mutex_unlock(&mutex_lock);
-
-    #ifdef DEBUG
-    printf("leave save_to_cache\n");
-    #endif
-}
-
-void *request_handler(void *ptr) {
+/* 
+ * request_handler - general function to handler each client request 
+ */
+void *request_handler(int client_fd) {
     #ifdef DEBUG
     printf("enter request_handler\n");
     #endif
 
-    int client_fd = ((Thread_Input*)ptr)->client_fd; 
     Request request;
     Response response;
     parse_request_header(client_fd, &request);
@@ -384,15 +298,14 @@ void *request_handler(void *ptr) {
         send_client(client_fd, &response);
     } else {
         if (forward_request(client_fd, &request, &response) < 0) {
-            Close(client_fd);
+            close(client_fd);
             return NULL;
         } else {
             if (response.content_size <= MAX_OBJECT_SIZE)
                 save_to_cache(&request, &response);
         }
     }
-    free(ptr);
-    Close(client_fd);
+    close(client_fd);
     #ifdef DEBUG
     printf("connection close\n\n");
     printf("leave request_handler\n");
@@ -400,58 +313,15 @@ void *request_handler(void *ptr) {
     return NULL; 
 }
 
-/*
- * scheduler -
+/* 
+ * worker_thread - thread that initialized first, then invoke when 
+ * reqeust comming in 
  */
-void scheduler(int client_fd) {
-    pthread_t tid;
-
-    Thread_Input *thread_input = (Thread_Input*)malloc(sizeof(Thread_Input));
-    thread_input->client_fd = client_fd;
-
-    Pthread_create(&tid, NULL, request_handler, thread_input);
-    Pthread_join(tid, NULL);
-    //Pthread_detach(tid);
-}
-
-/*
- * init_cache - initialize global variable cache
- */
-void init_cache() {
-    cache.head = NULL;
-    cache.tail = NULL;
-    cache.size = 0;
-}
-
-/*
- * clean_cache - free the cache memory(not impelmented)
- */
-void clean_cache() {
-
-}
-
-int main (int argc, char *argv []) {
-    int listen_fd, port;
-    int client_fd;
-    socklen_t socket_length;
-    struct sockaddr_in client_socket;
-
-    pthread_mutex_init(&mutex_lock, NULL);
-    init_cache();
-
-    if (argc != 2) {
-	    fprintf(stderr, "usage: %s <port>\n", argv[0]);
-	    exit(0);
+void *worker_thread(void *vargp) {  
+    Pthread_detach(pthread_self()); 
+    while (1) { 
+	    int client_fd = sbuf_remove(&sbuf);
+        request_handler(client_fd);
+        printf("client_fd:%d\n", client_fd);
     }
-
-    port = atoi(argv[1]);
-    listen_fd = Open_listenfd(port);
-    socket_length = sizeof(client_socket);
-
-    while (1) {
-        client_fd = Accept(listen_fd, (SA*)&client_socket, &socket_length);   
-        scheduler(client_fd);
-    }
-    pthread_mutex_destroy(&mutex_lock);
-    clean_cache();
 }

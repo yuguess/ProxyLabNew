@@ -1,3 +1,13 @@
+/*
+ * File     : crc32.c
+ * Author   : Dalong Cheng, Fan Xiang
+ * Andrew ID: dalongc, fanx
+ */
+
+#include <stdlib.h>
+#include "crc32.h"
+
+/* generated table for crc32 function */
 static unsigned long crc32_tab[] = {
       0x00000000L, 0x77073096L, 0xee0e612cL, 0x990951baL, 0x076dc419L,
       0x706af48fL, 0xe963a535L, 0x9e6495a3L, 0x0edb8832L, 0x79dcb8a4L,
@@ -51,21 +61,16 @@ static unsigned long crc32_tab[] = {
       0xcdd70693L, 0x54de5729L, 0x23d967bfL, 0xb3667a2eL, 0xc4614ab8L,
       0x5d681b02L, 0x2a6f2b94L, 0xb40bbe37L, 0xc30c8ea1L, 0x5a05df1bL,
       0x2d02ef8dL
-   };
+};
 
-/* Return a 32-bit CRC of the contents of the buffer. */
-
-unsigned long crc32(const unsigned char *s, unsigned int len)
-{
-  unsigned int i;
-  unsigned long crc32val;
+/* crc32 - return a 32-bit CRC of the contents of the buffer. */
+unsigned long crc32(char *s, unsigned int len) {
+    unsigned int i;
+    unsigned long crc32val;
   
-  crc32val = 0;
-  for (i = 0;  i < len;  i ++)
-    {
-      crc32val =
-	crc32_tab[(crc32val ^ s[i]) & 0xff] ^
-	  (crc32val >> 8);
+    crc32val = 0;
+    for (i = 0;  i < len;  i ++) {
+        crc32val = crc32_tab[(crc32val ^ s[i]) & 0xff] ^ (crc32val >> 8);
     }
-  return crc32val;
+    return crc32val;
 }

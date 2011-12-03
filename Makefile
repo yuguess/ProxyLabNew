@@ -13,7 +13,13 @@ proxy.o: proxy.c csapp.h
 crc32.o: crc32.c
 	$(CC) $(CFLAGS) -c crc32.c
 
-proxy: proxy.o csapp.o crc32.o
+cache.o: cache.c cache.h
+	$(CC) $(CFLAGS) -c cache.c
+
+sbuf.o: sbuf.c sbuf.h
+	$(CC) $(CFLAGS) -c sbuf.c
+
+proxy: proxy.o csapp.o crc32.o sbuf.o cache.o
 
 submit:
 	(make clean; cd ..; tar czvf proxylab.tar.gz proxylab-handout)
