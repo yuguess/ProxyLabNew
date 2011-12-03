@@ -1,7 +1,7 @@
 /*
  * File     : cache.h
  * Author   : Dalong Cheng, Fan Xiang
- * Andrew ID: dalongc, fanx
+ * Andrew ID: dalongc, fxiang
  */
 #ifndef __CACHE_H__
 #define __CACHE_H__

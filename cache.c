@@ -1,7 +1,7 @@
 /*
  * File     : cache.c
  * Author   : Dalong Cheng, Fan Xiang
- * Andrew ID: dalongc, fanx
+ * Andrew ID: dalongc, fxiang
  */
 
 #include "cache.h"
@@ -16,7 +16,7 @@ Cache_Block* is_in_cache(unsigned long key) {
     while (cache_block != NULL) {
         if (cache_block->key == key) {
             #ifdef DEBUG
-            printf("in cache ! key: %lu\n", key);
+            printf("-------in cache key: %lu\n", key);
             #endif
             return cache_block;
         }

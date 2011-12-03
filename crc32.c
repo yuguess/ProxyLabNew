@@ -1,7 +1,7 @@
 /*
  * File     : crc32.c
  * Author   : Dalong Cheng, Fan Xiang
- * Andrew ID: dalongc, fanx
+ * Andrew ID: dalongc, fxiang
  */
 
 #include <stdlib.h>

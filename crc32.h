@@ -1,7 +1,7 @@
 /*
  * File    : crc32.h
  * Author  : Dalong Cheng, Fan Xiang
- * Andrew ID: dalongc, fanx
+ * Andrew ID: dalongc, fxiang
  */
 #ifndef __CRC32_H__
 #define __CRC32_H__

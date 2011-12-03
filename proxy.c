@@ -1,7 +1,7 @@
 /*
  * File     : proxy.c
  * Author   : Dalong Cheng, Fan Xiang
- * Andrew ID: dalongc, fanx
+ * Andrew ID: dalongc, fxiang
  * 
  * General Code Structure
  * 1. Use producer and consumer model to handle client request 
@@ -37,7 +37,7 @@ void *worker_thread(void *);
 /* Macto definition*/
 #define NTHREADS  40
 #define SBUFSIZE  20
-
+#define state_ofs 9
 int main (int argc, char *argv []) {
     int listen_fd, port;
     int client_fd;
@@ -56,7 +56,7 @@ int main (int argc, char *argv []) {
     }
     port = atoi(argv[1]);   
     socket_length = sizeof(client_socket);
-    /* add SIGPIPE handler */
+    /* ignore SIGPIPE */
     Signal(SIGPIPE, SIG_IGN);
 
     /* initialize worker thread, then initialize buffer
@@ -301,7 +301,9 @@ void *request_handler(int client_fd) {
             close(client_fd);
             return NULL;
         } else {
-            if (response.content_size <= MAX_OBJECT_SIZE)
+            /* save to cache if status code 2XX and < max size */
+            if (response.content_size <= MAX_OBJECT_SIZE && 
+                response.header[state_ofs]=='2')
                 save_to_cache(&request, &response);
         }
     }
