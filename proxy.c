@@ -102,8 +102,6 @@ static inline int extract_port_number(char *resquest_str) {
     return 80;
 }
 
-
-
 void forward_response(int client_fd, int server_fd, Response *response) {
     #ifdef DEBUG
     printf("enter forward_response\n");
@@ -119,10 +117,9 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     while ((n = rio_readlineb(&server_rio, header_buffer, MAXLINE)) != 0) { 
         strcat(response->header, header_buffer); 
         
-        /*
         if (rio_writen(client_fd, header_buffer, n) < 0) {
             proxy_error("rio_writen in forward_response header error");  
-        }*/
+        }
         
         if (strstr(header_buffer, "Content-Length: ")) {
             sscanf(header_buffer + 16, "%d", &length);
