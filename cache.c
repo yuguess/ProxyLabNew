@@ -49,9 +49,14 @@ Cache_Block *build_cache_block(Request *request, Response *response) {
  * add_cache_block - add a cache block into cache link list
  */
 void add_cache_block(Cache_Block *cache_block) {
+    #ifdef DEBUG
+    fprintf(stderr, "enter add_cache_block\n");
+    #endif
     if (cache_block == NULL) {
+        #ifdef DEBUG
         fprintf(stderr, "error in add_cache_block, try to add empty block\n");
         abort();
+        #endif
     }
     if (cache.head == NULL) {
         cache.head = cache_block;
@@ -60,6 +65,7 @@ void add_cache_block(Cache_Block *cache_block) {
         if (cache.head->pre_block == NULL) {
             cache.head->pre_block = cache_block;
             cache_block->next_block = cache.head;
+            cache_block->pre_block = NULL;
             cache.head = cache_block;
         } else {
             fprintf(stderr, "add_cache_block error\n");
@@ -67,6 +73,13 @@ void add_cache_block(Cache_Block *cache_block) {
         }
     }
     cache.size += cache_block->content_size;
+    if (cache.size > MAX_CACHE_SIZE) {
+        fprintf(stderr, "cache size error !!!!!!!!!!!\n");
+        abort();
+    }
+    #ifdef DEBUG
+    fprintf(stderr, "leave add_cache_block\n");
+    #endif
 }
 
 /* 
@@ -74,6 +87,10 @@ void add_cache_block(Cache_Block *cache_block) {
  * maybe later will be freed or move to other place
  */
 void delete_link(Cache_Block *cache_block) {
+    #ifdef DEBUG
+    fprintf(stderr, "enter delete_link\n");
+    #endif
+
     Cache_Block *pre_block = cache_block->pre_block;
     Cache_Block *next_block = cache_block->next_block;
     if (cache_block == NULL) {
@@ -90,7 +107,6 @@ void delete_link(Cache_Block *cache_block) {
             fprintf(stderr, "delete_cache_block error, delete head block\n");
         }
     }
-
     if (next_block != NULL) {
         next_block->pre_block = pre_block;
     } else {
@@ -104,6 +120,9 @@ void delete_link(Cache_Block *cache_block) {
     }
     cache_block->pre_block = NULL;
     cache_block->next_block = NULL;
+    #ifdef DEBUG
+    fprintf(stderr, "leave delete_link\n");
+    #endif
 }
 
 /* 
@@ -119,9 +138,15 @@ void free_cache_block(Cache_Block *cache_block) {
  * 1 unlink, 2 free content
  */
 void delete_cache_block(Cache_Block *cache_block) {
+    #ifdef DEBUG
+    fprintf(stderr, "enter delete_cache_block\n");
+    #endif
     delete_link(cache_block);
     free_cache_block(cache_block);
     cache.size -= cache_block->content_size;
+    #ifdef DEBUG
+    fprintf(stderr, "leave delete_cache_block\n");
+    #endif
 }
 
 /*
@@ -144,6 +169,7 @@ int check_cache(Request *request, Response *response) {
         cache_block->time_stamp = time(NULL); 
 
         delete_link(cache_block);
+        cache.size -= cache_block->content_size;
         add_cache_block(cache_block);
         pthread_mutex_unlock(&mutex_lock);
         return 1;
@@ -160,19 +186,24 @@ void save_to_cache(Request *request, Response *response) {
     #ifdef DEBUG
     printf("save_to_cache function");
     #endif
+    
+    pthread_mutex_lock(&mutex_lock);
     Cache_Block *cache_block;
     cache_block = build_cache_block(request, response);
 
     /* entering critical area, add lock ! */
-    pthread_mutex_lock(&mutex_lock);
-
     #ifdef DEBUG
     printf("thread in critical area\n");
-    printf("length: %d\n", response->content_size);
+    printf("length: %d\n", cache_block->content_size);
+    
+    printf("cache size: %d\n", cache.size);
+    printf("max cache size: %d\n", MAX_CACHE_SIZE);
     #endif
-
-    if (cache.size + response->content_size > MAX_CACHE_SIZE) {
-        while (cache.size + response->content_size > MAX_CACHE_SIZE) {
+    if (cache.size + cache_block->content_size > MAX_CACHE_SIZE) {
+        #ifdef DEBUG
+        printf("begin to evict element!\n"); 
+        #endif
+        while (cache.size + cache_block->content_size > MAX_CACHE_SIZE) {
             delete_cache_block(cache.tail);
         }
     }

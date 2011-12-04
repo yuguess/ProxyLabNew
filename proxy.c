@@ -295,8 +295,14 @@ void *request_handler(int client_fd) {
     modify_request_header(&request);
     
     if (check_cache(&request, &response)) {
+        #ifdef DEBUG
+        printf("in cache ! \n");
+        #endif
         send_client(client_fd, &response);
     } else {
+        #ifdef DEBUG
+        printf("not in cache !\n");
+        #endif
         if (forward_request(client_fd, &request, &response) < 0) {
             close(client_fd);
             return NULL;
@@ -307,9 +313,10 @@ void *request_handler(int client_fd) {
                 save_to_cache(&request, &response);
         }
     }
+
     close(client_fd);
     #ifdef DEBUG
-    printf("connection close\n\n");
+    printf("connection close\n");
     printf("leave request_handler\n");
     #endif
     return NULL; 
@@ -320,10 +327,12 @@ void *request_handler(int client_fd) {
  * reqeust comming in 
  */
 void *worker_thread(void *vargp) {  
+    #ifdef DEBUG
+    printf("enter worker_thread\n");
+    #endif
     Pthread_detach(pthread_self()); 
     while (1) { 
 	    int client_fd = sbuf_remove(&sbuf);
         request_handler(client_fd);
-        printf("client_fd:%d\n", client_fd);
-    }
+    }    
 }
