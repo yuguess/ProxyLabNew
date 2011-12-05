@@ -247,6 +247,16 @@ int forward_request(int client_fd, Request *request, Response *response) {
     
     rio_writen(server_fd, request->request_str, strlen(request->request_str));
     rio_writen(server_fd, request->host_str, strlen(request->host_str));
+    /* send cookie to server */
+    if (request->cookie_size != 0) {
+        rio_writen(server_fd, request->cookie, request->cookie_size);
+    }
+    /* send user-agent info to server */
+    if (request->user_agent_size != 0) {
+        rio_writen(server_fd, request->user_agent, request->user_agent_size);
+    }
+    free(request->user_agent);
+    free(request->cookie);
     rio_writen(server_fd, "\r\n", strlen("\r\n"));
     
     forward_response(client_fd, server_fd, response);
@@ -270,11 +280,26 @@ void parse_request_header(int client_fd, Request *request) {
     printf("request str:%s", request->request_str);
     printf("host str: %s", request->host_str);
     #endif
-    
+     
+    request->cookie = (char*)Malloc(sizeof(char) * MAX_OBJECT_SIZE); 
+    request->cookie_size = 0;
+    request->user_agent = (char*)Malloc(sizeof(char) * MAX_OBJECT_SIZE); 
+    request->user_agent_size = 0;
     while ((n = rio_readlineb(&client_rio, buffer, MAXLINE)) != 0) { 
+        /* store cookie info for later use */
+        if (strstr(buffer, "Cookie:") != NULL) {
+            strncpy(request->cookie, buffer, n);
+            request->cookie_size = n;        
+        }
+        /* store user-agent info for later use */
+        if (strstr(buffer, "User-Agent:") != NULL) {
+            strncpy(request->user_agent, buffer, n);
+            request->user_agent_size = n;        
+        }
         #ifdef DEBUG
         printf("%s", buffer); 
         #endif
+        
         if (!strcmp(buffer, "\r\n")) {
             break;
         }
