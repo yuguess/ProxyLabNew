@@ -1,0 +1,6 @@
+Each js file is a test file
+
+Test Command
+mozmill -t trace file -b "firefox_path" -p "firefox_profile"
+for example:
+mozmill -t simple.js -b "/usr/bin/firefox" -p "/home/yuguess/.mozilla/firefox/c39w5awo.default"
