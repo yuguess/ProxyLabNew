@@ -155,26 +155,20 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     #ifdef DEBUG
     printf("enter forward_response\n");
     #endif
-    size_t n;
-    int    length = -1;
-    char   header_buffer[MAXLINE];
-    char   content_buffer[MAX_OBJECT_SIZE];
-    int    read_size;
+    size_t  n;
+    int     length = -1;
+    char    header_buffer[MAXLINE];
+    char    buffer[MAX_OBJECT_SIZE];
+    char    temp_buffer[MAX_OBJECT_SIZE];
+    char    content_buffer[10 * MAX_OBJECT_SIZE];
+    int     read_size;
     rio_t   server_rio;
 
     rio_readinitb(&server_rio, server_fd);
+    int buffer_pos = 0;
     while ((n = rio_readlineb(&server_rio, header_buffer, MAXLINE)) != 0) { 
-        strcat(response->header, header_buffer); 
-        
-        if (rio_writen(client_fd, header_buffer, n) < 0) {
-            sleep(2);
-            if (rio_writen(client_fd, header_buffer, n) < 0) {
-                sleep(1);
-                if (rio_writen(client_fd, header_buffer, n) < 0)
-                    proxy_error("rio_writen in forward_response header error");
-            }
-                  
-        }
+        memcpy(buffer + buffer_pos, header_buffer, sizeof(char) * n);      
+        buffer_pos += n;
         
         /*specify content-length info if header has this info */
         if (strstr(header_buffer, "Content-Length: ")) {
@@ -184,7 +178,7 @@ void forward_response(int client_fd, int server_fd, Response *response) {
             break;
         }
     }
-
+   
     if (length == -1)
         read_size = MAX_OBJECT_SIZE;
     else 
@@ -195,17 +189,28 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     #endif
 
     int sum = 0;
-    while ((n = rio_readnb(&server_rio, content_buffer, read_size)) != 0) { 
-        if (rio_writen(client_fd, content_buffer, n) < 0) {
-            sleep(2);
-            if (rio_writen(client_fd, content_buffer, n) < 0) {
-                sleep(1);
-                if (rio_writen(client_fd, content_buffer, n) < 0)
-                    proxy_error("rio_writen in forward_response content error");
-            }
-              
-        }
+    while ((n = rio_readnb(&server_rio, temp_buffer, read_size)) != 0) { 
+        memcpy(content_buffer + sum, temp_buffer, sizeof(char) * n);      
         sum += n;
+    }
+    /* send response header to client, try 3 times before give up */
+    if (rio_writen(client_fd, buffer, buffer_pos) < 0) {
+            sleep(2);
+            if (rio_writen(client_fd, buffer, buffer_pos) < 0) {
+                sleep(1);
+                if (rio_writen(client_fd, buffer, buffer_pos) < 0)
+                    proxy_error("rio_writen in forward_response header error");
+            }
+    }
+    /* send response content to client, try 3 times before give up */
+    if (rio_writen(client_fd, content_buffer, sum) < 0) {
+        sleep(2);
+        if (rio_writen(client_fd, content_buffer, sum) < 0) {
+            sleep(1);
+            if (rio_writen(client_fd, content_buffer, sum) < 0)
+                proxy_error("rio_writen in forward_response content error");
+        }
+              
     }
 
     #ifdef DEBUG 
