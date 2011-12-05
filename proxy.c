@@ -23,7 +23,7 @@ sbuf_t sbuf; /* shared buffer of connected descriptors */
 /* Internal function prototypes */
 static inline int min(int, int);
 static inline void copy_single_line_str(rio_t *, char *);
-static inline void extract_hostname(char *, char *, int*);
+static inline void extract_hostname_port(char *, char *, int*);
 void modify_request_header(Request *);
 void send_client(int, Response *);
 void forward_response(int, int, Response *);
@@ -324,6 +324,8 @@ void *request_handler(int client_fd) {
         #ifdef DEBUG
         printf("in cache ! \n");
         #endif
+        free(request.user_agent);
+        free(request.cookie);
         send_client(client_fd, &response);
     } else {
         #ifdef DEBUG
