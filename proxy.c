@@ -23,8 +23,7 @@ sbuf_t sbuf; /* shared buffer of connected descriptors */
 /* Internal function prototypes */
 static inline int min(int, int);
 static inline void copy_single_line_str(rio_t *, char *);
-static inline void extract_hostname(char *, char *);
-static inline int extract_port_number(char *);
+static inline void extract_hostname(char *, char *, int*);
 void modify_request_header(Request *);
 void send_client(int, Response *);
 void forward_response(int, int, Response *);
@@ -95,18 +94,21 @@ static inline void copy_single_line_str(rio_t *client_rio, char *buffer) {
 /* 
  * extract_hostname - extract hostname from string 
  */
-static inline void extract_hostname(char *src, char *desc) {
+static inline void extract_hostname_port(char *src, char *desc, int *port) {
     int copy_length;
     copy_length = strlen(src + 6) - 2;  
     strncpy(desc, src + 6, copy_length); 
     desc[copy_length] = '\0';
-}
 
-/* 
- * extract_port_number - extract port from input str 
- */
-static inline int extract_port_number(char *resquest_str) {
-    return 80;
+    /* futhre check, if hostname is like host:port, we need to 
+     * trunncate port str*/
+    char *pointer_before_port;
+    if ((pointer_before_port = strstr(desc, ":")) != NULL) {
+        sscanf(pointer_before_port + 1, "%d", port);
+        *pointer_before_port = '\0';
+    } else {
+        return;
+    }
 }
 
 /* 
@@ -228,12 +230,11 @@ int forward_request(int client_fd, Request *request, Response *response) {
     char hostname[MAXLINE];
     int  port = 80;
 
-    port = extract_port_number(request->request_str);
-    extract_hostname(request->host_str, hostname);
+    extract_hostname_port(request->host_str, hostname, &port);
 
     #ifdef DEBUG
-    printf("hostname:%s\n", hostname);
-    printf("port:%d\n", port);
+    printf("extract hostname:%s\n", hostname);
+    printf("extract port:%d\n", port);
     #endif
     if ((server_fd = open_clientfd(hostname, port)) < 0) {
        fprintf(stderr, "Warning connection refused !\n"); 

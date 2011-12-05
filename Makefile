@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -g -Wall -DDEBUG 
+CFLAGS = -g -Wall 
 LDFLAGS = -lpthread
 
 all: proxy
