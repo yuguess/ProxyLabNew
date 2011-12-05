@@ -137,15 +137,13 @@ void send_client(int client_fd, Response *response) {
         if (response->content != NULL) {
             if (rio_writen(client_fd, response->content, 
                         response->content_size) < 0) {
-                proxy_error("rio_writen in send_client error");  
+                proxy_error("rio_writen in send_client error");
             }
         } else {
-            fprintf(stderr, "error in send_client, content is NULL\n"); 
-            abort();
+            proxy_error("error in send_client, content is NULL\n");
         }
     } else {
-        fprintf(stderr, "error in send_client, response is NULL\n"); 
-        abort();
+        proxy_error("error in send_client, response is NULL\n");
     }
 }
 
@@ -158,10 +156,10 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     printf("enter forward_response\n");
     #endif
     size_t n;
-    int length = -1;
-    char header_buffer[MAXLINE];
-    char content_buffer[MAX_OBJECT_SIZE];
-    int read_size;
+    int    length = -1;
+    char   header_buffer[MAXLINE];
+    char   content_buffer[MAX_OBJECT_SIZE];
+    int    read_size;
     rio_t   server_rio;
 
     rio_readinitb(&server_rio, server_fd);
@@ -169,9 +167,16 @@ void forward_response(int client_fd, int server_fd, Response *response) {
         strcat(response->header, header_buffer); 
         
         if (rio_writen(client_fd, header_buffer, n) < 0) {
-            proxy_error("rio_writen in forward_response header error");  
+            sleep(2);
+            if (rio_writen(client_fd, header_buffer, n) < 0) {
+                sleep(1);
+                if (rio_writen(client_fd, header_buffer, n) < 0)
+                    proxy_error("rio_writen in forward_response header error");
+            }
+                  
         }
         
+        /*specify content-length info if header has this info */
         if (strstr(header_buffer, "Content-Length: ")) {
             sscanf(header_buffer + 16, "%d", &length);
         }
@@ -192,8 +197,13 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     int sum = 0;
     while ((n = rio_readnb(&server_rio, content_buffer, read_size)) != 0) { 
         if (rio_writen(client_fd, content_buffer, n) < 0) {
-            proxy_error("rio_writen in forward_response content error");  
-            close(client_fd);
+            sleep(2);
+            if (rio_writen(client_fd, content_buffer, n) < 0) {
+                sleep(1);
+                if (rio_writen(client_fd, content_buffer, n) < 0)
+                    proxy_error("rio_writen in forward_response content error");
+            }
+              
         }
         sum += n;
     }
@@ -237,8 +247,14 @@ int forward_request(int client_fd, Request *request, Response *response) {
     printf("extract port:%d\n", port);
     #endif
     if ((server_fd = open_clientfd(hostname, port)) < 0) {
-       fprintf(stderr, "Warning connection refused !\n"); 
-       return -1;
+        sleep(2);
+        if ((server_fd = open_clientfd(hostname, port)) < 0) {
+            sleep(2);
+            if ((server_fd = open_clientfd(hostname, port)) < 0) {
+                proxy_error(strcat(hostname, " connection refuesed"));
+                return -1;
+            }
+        }
     }
 
     rio_readinitb(&server_rio, server_fd);
