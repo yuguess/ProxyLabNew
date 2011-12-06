@@ -26,7 +26,7 @@ static inline void copy_single_line_str(rio_t *, char *);
 static inline void extract_hostname_port(char *, char *, int*);
 void modify_request_header(Request *);
 void send_client(int, Response *);
-void forward_response(int, int, Response *);
+int forward_response(int, int, Response *);
 void proxy_error(char *);
 int forward_request(int, Request *, Response *);
 void parse_request_header(int, Request *);
@@ -34,9 +34,10 @@ void *request_handler(int);
 void *worker_thread(void *);
 
 /* Macto definition*/
-#define NTHREADS  40
+#define NTHREADS  20
 #define SBUFSIZE  20
 #define state_ofs 9
+
 int main (int argc, char *argv []) {
     int listen_fd, port;
     int client_fd;
@@ -151,23 +152,24 @@ void send_client(int client_fd, Response *response) {
  * forward_response - send request to server, then store resposne content
  * in cache if necessary 
  */
-void forward_response(int client_fd, int server_fd, Response *response) {
+int forward_response(int client_fd, int server_fd, Response *response) {
     #ifdef DEBUG
     printf("enter forward_response\n");
     #endif
     size_t  n;
     int     length = -1;
-    char    header_buffer[MAXLINE];
-    char    buffer[MAX_OBJECT_SIZE];
-    char    temp_buffer[MAX_OBJECT_SIZE];
-    char    content_buffer[10 * MAX_OBJECT_SIZE];
     int     read_size;
     rio_t   server_rio;
+    char header_buffer[MAXLINE];
+    char temp_buffer[MAX_OBJECT_SIZE];
+    char  buffer[10 * MAX_OBJECT_SIZE];
+    char content_buffer[10 * MAX_OBJECT_SIZE];
 
     rio_readinitb(&server_rio, server_fd);
     int buffer_pos = 0;
     while ((n = rio_readlineb(&server_rio, header_buffer, MAXLINE)) != 0) { 
-        memcpy(buffer + buffer_pos, header_buffer, sizeof(char) * n);      
+        memcpy(response->header + buffer_pos, 
+                header_buffer, sizeof(char) * n);      
         buffer_pos += n;
         
         /*specify content-length info if header has this info */
@@ -178,7 +180,7 @@ void forward_response(int client_fd, int server_fd, Response *response) {
             break;
         }
     }
-   
+
     if (length == -1)
         read_size = MAX_OBJECT_SIZE;
     else 
@@ -193,24 +195,18 @@ void forward_response(int client_fd, int server_fd, Response *response) {
         memcpy(content_buffer + sum, temp_buffer, sizeof(char) * n);      
         sum += n;
     }
-    /* send response header to client, try 3 times before give up */
-    if (rio_writen(client_fd, buffer, buffer_pos) < 0) {
-            sleep(2);
-            if (rio_writen(client_fd, buffer, buffer_pos) < 0) {
-                sleep(1);
-                if (rio_writen(client_fd, buffer, buffer_pos) < 0)
-                    proxy_error("rio_writen in forward_response header error");
-            }
-    }
-    /* send response content to client, try 3 times before give up */
-    if (rio_writen(client_fd, content_buffer, sum) < 0) {
-        sleep(2);
-        if (rio_writen(client_fd, content_buffer, sum) < 0) {
+
+    memcpy(buffer, response->header, sizeof(char) * buffer_pos);
+    memcpy(buffer + buffer_pos, content_buffer,  sizeof(char) * sum);
+    if (rio_writen(client_fd, buffer, buffer_pos + sum) < 0) {
             sleep(1);
-            if (rio_writen(client_fd, content_buffer, sum) < 0)
-                proxy_error("rio_writen in forward_response content error");
-        }
-              
+            if (rio_writen(client_fd, buffer, buffer_pos + sum) < 0) {
+                sleep(2);
+                if (rio_writen(client_fd, buffer, buffer_pos + sum) < 0)
+                    proxy_error("rio_writen in forward_response" 
+                            " header content error");
+                    return -1;
+            }
     }
 
     #ifdef DEBUG 
@@ -224,9 +220,11 @@ void forward_response(int client_fd, int server_fd, Response *response) {
     } else {
         response->content_size = sum;
     }
+
     #ifdef DEBUG
     printf("leave forward_response\n");
     #endif
+    return 1;
 }
 
 /* 
@@ -257,6 +255,7 @@ int forward_request(int client_fd, Request *request, Response *response) {
             sleep(2);
             if ((server_fd = open_clientfd(hostname, port)) < 0) {
                 proxy_error(strcat(hostname, " connection refuesed"));
+                close(server_fd);
                 return -1;
             }
         }
@@ -277,11 +276,12 @@ int forward_request(int client_fd, Request *request, Response *response) {
     if (request->user_agent_size != 0) {
         rio_writen(server_fd, request->user_agent, request->user_agent_size);
     }
-    free(request->user_agent);
-    free(request->cookie);
     rio_writen(server_fd, "\r\n", strlen("\r\n"));
     
-    forward_response(client_fd, server_fd, response);
+    if (forward_response(client_fd, server_fd, response) < 0) {
+        close(server_fd);
+        return -1;
+    }
     close(server_fd);
     return 1;
 }
@@ -303,9 +303,7 @@ void parse_request_header(int client_fd, Request *request) {
     printf("host str: %s", request->host_str);
     #endif
      
-    request->cookie = (char*)Malloc(sizeof(char) * MAX_OBJECT_SIZE); 
     request->cookie_size = 0;
-    request->user_agent = (char*)Malloc(sizeof(char) * MAX_OBJECT_SIZE); 
     request->user_agent_size = 0;
     while ((n = rio_readlineb(&client_rio, buffer, MAXLINE)) != 0) { 
         /* store cookie info for later use */
@@ -345,8 +343,6 @@ void *request_handler(int client_fd) {
         #ifdef DEBUG
         printf("in cache ! \n");
         #endif
-        free(request.user_agent);
-        free(request.cookie);
         send_client(client_fd, &response);
     } else {
         #ifdef DEBUG
@@ -357,8 +353,8 @@ void *request_handler(int client_fd) {
             return NULL;
         } else {
             /* save to cache if status code 2XX and < max size */
-            if (response.content_size <= MAX_OBJECT_SIZE && 
-                response.header[state_ofs]=='2')
+            if (response.content_size <= MAX_OBJECT_SIZE &&
+                    response.header[state_ofs] == '2')
                 save_to_cache(&request, &response);
         }
     }
